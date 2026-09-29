@@ -765,15 +765,25 @@ Projects
       return;
     }
 
-    resultsEl.innerHTML = projects.map(project => `
+    resultsEl.innerHTML = projects.map(project => {
+      const hasProjectUrl = project.project_url && String(project.project_url).trim() !== '';
+      const titleHtml = hasProjectUrl
+        ? `<a href="${project.project_url}">${project.title || 'Untitled project'}</a>`
+        : `${project.title || 'Untitled project'}`;
+      const projectLinkHtml = hasProjectUrl
+        ? `<a href="${project.project_url}">Open project page</a>`
+        : '';
+
+      return `
       <div class="atlas-card">
-        <h3><a href="${project.project_url || '#'}">${project.title || 'Untitled project'}</a></h3>
+        <h3>${titleHtml}</h3>
         <div class="atlas-meta">${project.year || 'Unknown year'} • ${project.team || 'Unknown team'} • ${project.location || 'California statewide'}</div>
         <div class="atlas-meta">${project.topic_list.length ? project.topic_list.join(' • ') : 'No topic listed'}</div>
         <p>${project.description ? (project.description.length > 280 ? project.description.slice(0, 280) + '…' : project.description) : 'No description available.'}</p>
-        <a href="${project.project_url || '#'}">Open project page</a>
+        ${projectLinkHtml}
       </div>
-    `).join('');
+    `;
+    }).join('');
   }
 
   function renderAll() {

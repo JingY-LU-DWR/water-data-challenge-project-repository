@@ -17,6 +17,15 @@ if (!file.exists(source_path)) {
   stop("Project workbook not found: ", source_path)
 }
 
+commitments_2026_path <- here(
+  "01_projects_repository",
+  "2026_water_data_challenge",
+  "2026 CA Open Water Data Showcase _ Project Commitment (Responses).xlsx"
+)
+if (!file.exists(commitments_2026_path)) {
+  stop("2026 commitments workbook not found: ", commitments_2026_path)
+}
+
 projects_raw <- read_excel(
   path = source_path,
   sheet = "projects_table",
@@ -24,6 +33,13 @@ projects_raw <- read_excel(
 ) %>%
   clean_names() %>%
   filter(publish_to_website == TRUE)
+
+commitments_2026_raw <- read_excel(
+  path = commitments_2026_path,
+  sheet = "Form Responses 1",
+  col_types = "text"
+) %>%
+  clean_names()
 
 keyword_keep <- c(
   "water", "data", "groundwater", "drought", "quality", "infrastructure",
@@ -85,8 +101,6 @@ extract_keywords <- function(text) {
 
 projects <- projects_raw %>%
   mutate(
-    project_id = row_number(),
-    .before = year,
     year = suppressWarnings(as.numeric(str_replace(as.character(year), "\\.0$", ""))),
     title = replace_na(title, ""),
     description = replace_na(description, ""),
@@ -101,6 +115,7 @@ projects <- projects_raw %>%
     project_url = paste0("projects/", project_slug, ".html"),
     raw_text = paste(title, description),
     keywords = lapply(raw_text, extract_keywords),
+    status = "Historical",
     spatial_status = "statewide_no_geospatial_footprint",
     spatial_category = "California statewide",
     spatial_notes = "No reliable project-level geometry was recorded in the workbook. This project is represented at the California statewide level until a documented footprint is added.",
@@ -119,10 +134,10 @@ projects <- projects_raw %>%
       })
   ) %>%
   select(
-    id = project_id,
     title,
     year,
     event,
+    status,
     team_name,
     team_members,
     description,
@@ -136,6 +151,92 @@ projects <- projects_raw %>%
     latitude,
     longitude
   )
+
+extract_team_name <- function(x) {
+  x <- replace_na(x, "")
+  m <- str_match(x, regex("team\\s*name\\s*:\\s*([^\\r\\n]+)", ignore_case = TRUE))
+  out <- ifelse(!is.na(m[, 2]), str_trim(m[, 2]), "")
+  replace_na(out, "")
+}
+
+extract_year_from_timestamp <- function(x) {
+  x <- replace_na(as.character(x), "")
+
+  year_prefix <- suppressWarnings(as.numeric(str_match(x, "^((?:19|20)\\d{2})")[, 2]))
+
+  serial_num <- suppressWarnings(as.numeric(x))
+  serial_year <- suppressWarnings(as.numeric(format(as.Date(serial_num, origin = "1899-12-30"), "%Y")))
+  serial_year <- ifelse(!is.na(serial_num) & serial_num > 20000 & serial_num < 80000, serial_year, NA_real_)
+
+  year <- dplyr::coalesce(year_prefix, serial_year)
+  ifelse(is.na(year), 2026, year)
+}
+
+commitments_2026 <- commitments_2026_raw %>%
+  mutate(
+    year = extract_year_from_timestamp(timestamp),
+    title = replace_na(what_is_your_project_name, ""),
+    description = replace_na(
+      briefly_describe_the_open_water_data_project_or_opportunity_you_are_hoping_to_explore_please_do_so_in_200_words_or_fewer,
+      ""
+    ),
+    team_source = replace_na(
+      if_this_is_a_team_project_please_provide_the_other_team_members_names_emails_and_the_team_name_if_you_have_one,
+      ""
+    ),
+    submitter = str_trim(paste0(
+      replace_na(your_name, ""),
+      ifelse(replace_na(you_email_address, "") != "", paste0(" <", you_email_address, ">"), "")
+    )),
+    team_name = extract_team_name(team_source),
+    team_members = str_trim(paste(
+      ifelse(submitter != "", paste0("Submitter: ", submitter), ""),
+      team_source,
+      sep = "\n"
+    )),
+    team_members = str_replace(team_members, "^[\\n]+|[\\n]+$", ""),
+    topics = "",
+    topic_list = replicate(n(), character(0), simplify = FALSE),
+    event = "2026 CA Open Water Data Showcase (Project Commitments)",
+    raw_text = paste(
+      title,
+      description,
+      replace_na(please_check_any_and_all_boxes_that_apply_i_am, ""),
+      replace_na(
+        please_list_any_key_partners_stakeholders_and_or_communities_that_engage_or_intersect_with_this_project_or_its_data_i_e_are_affected_by_the_outcomes_associated_with_this_data_opportunity,
+        ""
+      )
+    ),
+    keywords = lapply(raw_text, extract_keywords),
+    project_url = NA_character_,
+    status = "In progress",
+    spatial_status = "statewide_no_geospatial_footprint",
+    spatial_category = "California statewide",
+    spatial_notes = "No reliable project-level geometry was recorded in the commitments workbook. This project is represented at the California statewide level until a documented footprint is added.",
+    latitude = 36.7783,
+    longitude = -119.4179
+  ) %>%
+  select(
+    title,
+    year,
+    event,
+    status,
+    team_name,
+    team_members,
+    description,
+    topics,
+    topic_list,
+    keywords,
+    project_url,
+    spatial_status,
+    spatial_category,
+    spatial_notes,
+    latitude,
+    longitude
+  )
+
+projects <- bind_rows(projects, commitments_2026) %>%
+  mutate(id = row_number(), .before = title)
 
 output_dir <- here("docs")
 if (!dir.exists(output_dir)) {
