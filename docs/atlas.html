@@ -366,31 +366,109 @@ ul.task-list li input[type="checkbox"] {
   .atlas-section h2 {
     margin-top: 0;
   }
-  .atlas-map-panel {
+  .atlas-who-panel {
     display: grid;
-    grid-template-columns: minmax(280px, 1.2fr) minmax(220px, 0.8fr);
+    grid-template-columns: minmax(340px, 1.5fr) minmax(260px, 0.9fr);
     gap: 1rem;
   }
-  .atlas-map-wrap {
+  .atlas-network-wrap {
     position: relative;
-    min-height: 320px;
+    min-height: 380px;
     border: 1px solid #d1d5db;
     border-radius: 12px;
     background: #f8fafc;
     overflow: hidden;
   }
-  .atlas-map-wrap svg {
+  .atlas-network-wrap svg {
     width: 100%;
     height: 100%;
     display: block;
   }
-  .atlas-map-legend {
+  .atlas-network-sidebar {
     display: flex;
+    flex-direction: column;
+    gap: 0.7rem;
+  }
+  .atlas-network-controls {
+    display: flex;
+    gap: 0.55rem;
     flex-wrap: wrap;
-    gap: 0.5rem;
-    align-items: flex-start;
-    max-height: 320px;
+  }
+  .atlas-btn {
+    border: 1px solid #cbd5e1;
+    background: #fff;
+    border-radius: 8px;
+    padding: 0.45rem 0.7rem;
+    font-size: 0.85rem;
+    cursor: pointer;
+  }
+  .atlas-btn:hover,
+  .atlas-btn:focus-visible {
+    border-color: #2563eb;
+    outline: none;
+  }
+  .atlas-network-details {
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    padding: 0.85rem;
+    background: #fff;
+    min-height: 290px;
+  }
+  .atlas-network-details h3 {
+    margin: 0 0 0.45rem;
+    font-size: 1rem;
+  }
+  .atlas-network-meta {
+    font-size: 0.84rem;
+    color: #4b5563;
+    margin-bottom: 0.45rem;
+  }
+  .atlas-network-list {
+    margin: 0.4rem 0 0;
+    padding-left: 1rem;
+    max-height: 190px;
     overflow: auto;
+  }
+  .atlas-network-list li {
+    margin: 0.2rem 0;
+  }
+  .atlas-edge {
+    stroke: #cbd5e1;
+    stroke-width: 1.2;
+    opacity: 0.65;
+  }
+  .atlas-edge.active {
+    stroke: #2563eb;
+    stroke-width: 2;
+    opacity: 0.95;
+  }
+  .atlas-node {
+    cursor: pointer;
+    stroke-width: 1.2;
+    transition: opacity 0.15s ease;
+  }
+  .atlas-node.entity {
+    fill: #16a34a;
+    stroke: #166534;
+  }
+  .atlas-node.project {
+    fill: #2563eb;
+    stroke: #1d4ed8;
+  }
+  .atlas-node.dimmed {
+    opacity: 0.2;
+  }
+  .atlas-node.active {
+    stroke: #111827;
+    stroke-width: 2.2;
+  }
+  .atlas-node-label {
+    font-size: 11px;
+    fill: #111827;
+    pointer-events: none;
+  }
+  .atlas-node-label.dimmed {
+    opacity: 0.25;
   }
   .atlas-chip {
     display: inline-block;
@@ -534,18 +612,25 @@ ul.task-list li input[type="checkbox"] {
 </div>
 <div class="atlas-section">
 <h2 class="anchored">
-WHERE — Explore by Place
+WHO — Explore the Ecosystem
 </h2>
-<div class="atlas-map-panel">
-<div id="atlas-map" class="atlas-map-wrap">
+<div class="atlas-who-panel">
+<div id="atlas-network" class="atlas-network-wrap">
 
 </div>
-<div id="atlas-map-legend" class="atlas-map-legend">
+<div class="atlas-network-sidebar">
+<div class="atlas-network-controls">
+<button id="atlas-network-reset" class="atlas-btn" type="button">
+Reset selection
+</button>
+</div>
+<div id="atlas-network-details" class="atlas-network-details">
 
+</div>
 </div>
 </div>
 <div class="atlas-note">
-Spatial representation is intentionally conservative. Projects without a documented spatial footprint are grouped at the California statewide level instead of being assigned arbitrary points.
+This view shows documented entity-to-project associations from available source fields. It does not infer entity-to-entity collaboration.
 </div>
 </div>
 <div class="atlas-section">
@@ -581,15 +666,19 @@ Projects
     topic: 'all',
     location: 'all',
     keyword: 'all',
-    search: ''
+    search: '',
+    selectedEntity: null,
+    selectedProjectId: null,
+    includeIndividuals: false
   };
 
   const yearFilter = document.getElementById('atlas-year-filter');
   const topicFilter = document.getElementById('atlas-topic-filter');
   const locationFilter = document.getElementById('atlas-location-filter');
   const searchInput = document.getElementById('atlas-search');
-  const mapEl = document.getElementById('atlas-map');
-  const mapLegendEl = document.getElementById('atlas-map-legend');
+  const networkEl = document.getElementById('atlas-network');
+  const networkDetailsEl = document.getElementById('atlas-network-details');
+  const networkResetBtn = document.getElementById('atlas-network-reset');
   const timelineEl = document.getElementById('atlas-timeline');
   const keywordsEl = document.getElementById('atlas-keywords');
   const resultsEl = document.getElementById('atlas-results');
@@ -604,6 +693,9 @@ Projects
     const keywordList = Array.isArray(project.keywords)
       ? project.keywords
       : (Array.isArray(project.keyword_list) ? project.keyword_list : []);
+    const relationshipList = Array.isArray(project.entity_relationships)
+      ? project.entity_relationships
+      : [];
 
     return {
       ...project,
@@ -611,6 +703,8 @@ Projects
       topic_list: topicList,
       keywords: keywordList,
       keyword_list: keywordList,
+      entity_role: project.entity_role || '',
+      entity_relationships: relationshipList,
       location: project.spatial_category || 'California statewide',
       description: (project.description || '').replace(/\s+/g, ' ').trim(),
       team: project.team_name || project.team_members || 'Unknown team'
@@ -635,6 +729,299 @@ Projects
     });
   }
 
+  function cleanEntityName(value) {
+    return String(value || '')
+      .replace(/<[^>]+>/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function normalizeEntityType(entityTypeRaw) {
+    const value = String(entityTypeRaw || '').trim();
+    return value || 'Unknown';
+  }
+
+  function getProjectRelationships(project) {
+    const rels = Array.isArray(project.entity_relationships) ? project.entity_relationships : [];
+    const filtered = rels.filter(rel => {
+      const name = cleanEntityName(rel.entity_name || '');
+      if (!name) return false;
+      const type = normalizeEntityType(rel.entity_type);
+      if (!state.includeIndividuals && type === 'Individual') return false;
+      return true;
+    });
+
+    const dedup = [];
+    const seen = new Set();
+    filtered.forEach(rel => {
+      const name = cleanEntityName(rel.entity_name || '');
+      const role = String(rel.entity_role || '').trim();
+      const src = String(rel.source_field || '').trim();
+      const key = `${name}||${role}||${src}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      dedup.push({
+        entity_name: name,
+        entity_type: normalizeEntityType(rel.entity_type),
+        entity_role: role,
+        source_field: src,
+        evidence: String(rel.evidence || '').trim(),
+        project_id: rel.project_id || project.id,
+        project_title: rel.project_title || project.title,
+        year: rel.year || project.year
+      });
+    });
+    return dedup;
+  }
+
+  function buildNetwork(projects) {
+    const entities = new Map();
+    const projectNodes = [];
+    const links = [];
+
+    projects.forEach(project => {
+      const pid = String(project.id);
+      projectNodes.push({
+        id: `project:${pid}`,
+        projectId: pid,
+        type: 'project',
+        label: project.title || 'Untitled project',
+        project
+      });
+
+      const relationships = getProjectRelationships(project);
+      relationships.forEach(rel => {
+        const entityName = rel.entity_name;
+        if (!entities.has(entityName)) {
+          entities.set(entityName, {
+            id: `entity:${entityName}`,
+            name: entityName,
+            type: 'entity',
+            entityType: rel.entity_type || 'Unknown',
+            projects: new Set(),
+            roles: new Set(),
+            sourceFields: new Set(),
+            evidence: new Set()
+          });
+        }
+        const entityNode = entities.get(entityName);
+        entityNode.projects.add(pid);
+        if (rel.entity_role) entityNode.roles.add(rel.entity_role);
+        if (rel.source_field) entityNode.sourceFields.add(rel.source_field);
+        if (rel.evidence) entityNode.evidence.add(rel.evidence);
+
+        links.push({
+          id: `link:${entityName}::${pid}`,
+          source: entityNode.id,
+          target: `project:${pid}`,
+          entityName,
+          projectId: pid,
+          sourceField: rel.source_field,
+          evidence: rel.evidence,
+          entityRole: rel.entity_role
+        });
+      });
+    });
+
+    const entityNodes = Array.from(entities.values()).map(node => ({
+      ...node,
+      projectCount: node.projects.size,
+      roleText: Array.from(node.roles).join(' | '),
+      sourceFieldsText: Array.from(node.sourceFields).join(' | '),
+      evidenceList: Array.from(node.evidence).slice(0, 8)
+    }));
+
+    return {
+      entityNodes: entityNodes.sort((a, b) => b.projectCount - a.projectCount || a.name.localeCompare(b.name)),
+      projectNodes,
+      links
+    };
+  }
+
+  function renderNetworkDetails(selection, network, baseProjects) {
+    if (!selection) {
+      networkDetailsEl.innerHTML = '<div class="atlas-empty">Select an entity or project in the network to inspect documented associations.</div>';
+      return;
+    }
+
+    if (selection.kind === 'entity') {
+      const entity = network.entityNodes.find(n => n.name === selection.value);
+      if (!entity) {
+        networkDetailsEl.innerHTML = '<div class="atlas-empty">Selected entity is not available in the current filter context.</div>';
+        return;
+      }
+      const relatedProjects = baseProjects
+        .filter(p => entity.projects.has(String(p.id)))
+        .sort((a, b) => (a.year || 0) - (b.year || 0));
+      const years = Array.from(new Set(relatedProjects.map(p => p.year).filter(Boolean))).sort((a, b) => a - b);
+
+      networkDetailsEl.innerHTML = `
+        <h3>${entity.name}</h3>
+        <div class="atlas-network-meta">Type: ${entity.entityType}</div>
+        <div class="atlas-network-meta">Associated projects: ${relatedProjects.length}</div>
+        <div class="atlas-network-meta">Years represented: ${years.length ? years.join(', ') : 'Unknown'}</div>
+        ${entity.roleText ? `<div class="atlas-network-meta">Roles: ${entity.roleText}</div>` : ''}
+        ${entity.sourceFieldsText ? `<div class="atlas-network-meta">Source fields: ${entity.sourceFieldsText}</div>` : ''}
+        <strong>Related projects</strong>
+        <ul class="atlas-network-list">
+          ${relatedProjects.map(p => `<li>${p.title || 'Untitled project'}${p.year ? ` (${p.year})` : ''}</li>`).join('')}
+        </ul>
+      `;
+      return;
+    }
+
+    const project = baseProjects.find(p => String(p.id) === String(selection.value));
+    if (!project) {
+      networkDetailsEl.innerHTML = '<div class="atlas-empty">Selected project is not available in the current filter context.</div>';
+      return;
+    }
+    const connectedEntities = network.entityNodes
+      .filter(e => e.projects.has(String(project.id)))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    networkDetailsEl.innerHTML = `
+      <h3>${project.title || 'Untitled project'}</h3>
+      <div class="atlas-network-meta">Status: ${project.status || 'Unknown'}</div>
+      <div class="atlas-network-meta">Year: ${project.year || 'Unknown'}</div>
+      <div class="atlas-network-meta">Associated entities: ${connectedEntities.length}</div>
+      <strong>Associated entities</strong>
+      <ul class="atlas-network-list">
+        ${connectedEntities.map(e => `<li>${e.name} <span class="atlas-network-meta">(${e.entityType})</span></li>`).join('')}
+      </ul>
+    `;
+  }
+
+  function renderWhoNetwork(baseProjects) {
+    const network = buildNetwork(baseProjects);
+
+    if (state.selectedEntity && !network.entityNodes.some(n => n.name === state.selectedEntity)) {
+      state.selectedEntity = null;
+    }
+    if (state.selectedProjectId && !network.projectNodes.some(n => n.projectId === String(state.selectedProjectId))) {
+      state.selectedProjectId = null;
+    }
+
+    if (!network.entityNodes.length && !network.projectNodes.length) {
+      networkEl.innerHTML = '<div class="atlas-empty">No ecosystem associations are available for the current filters.</div>';
+      renderNetworkDetails(null, network, baseProjects);
+      return;
+    }
+
+    const width = 960;
+    const rowHeight = 30;
+    const marginTop = 26;
+    const entityX = 220;
+    const projectX = 740;
+
+    const entityNodes = network.entityNodes;
+    const projectNodes = network.projectNodes.sort((a, b) => (a.project.year || 0) - (b.project.year || 0) || a.label.localeCompare(b.label));
+    const count = Math.max(entityNodes.length, projectNodes.length);
+    const height = Math.max(380, marginTop * 2 + count * rowHeight);
+
+    const entityPos = new Map();
+    entityNodes.forEach((node, idx) => entityPos.set(node.id, { x: entityX, y: marginTop + idx * rowHeight + 16 }));
+    const projectPos = new Map();
+    projectNodes.forEach((node, idx) => projectPos.set(node.id, { x: projectX, y: marginTop + idx * rowHeight + 16 }));
+
+    const hasSelection = !!(state.selectedEntity || state.selectedProjectId);
+    const activeProjectIds = new Set();
+    const activeEntityNames = new Set();
+    if (state.selectedEntity) {
+      activeEntityNames.add(state.selectedEntity);
+      const entity = entityNodes.find(n => n.name === state.selectedEntity);
+      if (entity) entity.projects.forEach(pid => activeProjectIds.add(String(pid)));
+    }
+    if (state.selectedProjectId) {
+      activeProjectIds.add(String(state.selectedProjectId));
+      entityNodes.forEach(node => {
+        if (node.projects.has(String(state.selectedProjectId))) activeEntityNames.add(node.name);
+      });
+    }
+
+    const linkSvg = network.links.map(link => {
+      const s = entityPos.get(link.source);
+      const t = projectPos.get(link.target);
+      if (!s || !t) return '';
+      const active = state.selectedEntity
+        ? (link.entityName === state.selectedEntity)
+        : (state.selectedProjectId ? String(link.projectId) === String(state.selectedProjectId) : false);
+      const dimmed = hasSelection && !active;
+      return `<line class="atlas-edge ${active ? 'active' : ''} ${dimmed ? 'dimmed' : ''}" x1="${s.x}" y1="${s.y}" x2="${t.x}" y2="${t.y}" />`;
+    }).join('');
+
+    const entitySvg = entityNodes.map(node => {
+      const p = entityPos.get(node.id);
+      const active = activeEntityNames.has(node.name);
+      const dimmed = hasSelection && !active;
+      const r = Math.max(6, Math.min(14, 5 + node.projectCount * 1.2));
+      const label = node.name.length > 34 ? `${node.name.slice(0, 31)}…` : node.name;
+      return `
+        <g data-entity="${node.name.replace(/"/g, '&quot;')}">
+          <circle class="atlas-node entity ${active ? 'active' : ''} ${dimmed ? 'dimmed' : ''}" cx="${p.x}" cy="${p.y}" r="${r}" />
+          <text class="atlas-node-label ${dimmed ? 'dimmed' : ''}" x="${p.x - 10}" y="${p.y + 4}" text-anchor="end">${label}</text>
+        </g>
+      `;
+    }).join('');
+
+    const projectSvg = projectNodes.map(node => {
+      const p = projectPos.get(node.id);
+      const active = activeProjectIds.has(String(node.projectId));
+      const dimmed = hasSelection && !active;
+      const degree = entityNodes.filter(e => e.projects.has(String(node.projectId))).length;
+      const r = Math.max(5, Math.min(12, 4 + degree * 1.5));
+      const label = node.label.length > 38 ? `${node.label.slice(0, 35)}…` : node.label;
+      return `
+        <g data-project-id="${String(node.projectId)}">
+          <circle class="atlas-node project ${active ? 'active' : ''} ${dimmed ? 'dimmed' : ''}" cx="${p.x}" cy="${p.y}" r="${r}" />
+          <text class="atlas-node-label ${dimmed ? 'dimmed' : ''}" x="${p.x + 10}" y="${p.y + 4}" text-anchor="start">${label}</text>
+        </g>
+      `;
+    }).join('');
+
+    networkEl.innerHTML = `
+      <svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Entity to project ecosystem network">
+        <text x="80" y="20" font-size="12" fill="#374151" font-weight="600">Entities</text>
+        <text x="790" y="20" font-size="12" fill="#374151" font-weight="600">Projects</text>
+        ${linkSvg}
+        ${entitySvg}
+        ${projectSvg}
+      </svg>
+    `;
+
+    networkEl.querySelectorAll('[data-entity]').forEach(group => {
+      group.addEventListener('click', () => {
+        const entityName = group.getAttribute('data-entity');
+        state.selectedEntity = state.selectedEntity === entityName ? null : entityName;
+        state.selectedProjectId = null;
+        renderAll();
+      });
+    });
+
+    networkEl.querySelectorAll('[data-project-id]').forEach(group => {
+      group.addEventListener('click', () => {
+        const pid = group.getAttribute('data-project-id');
+        state.selectedProjectId = state.selectedProjectId === pid ? null : pid;
+        state.selectedEntity = null;
+        renderAll();
+      });
+    });
+
+    const selection = state.selectedEntity
+      ? { kind: 'entity', value: state.selectedEntity }
+      : (state.selectedProjectId ? { kind: 'project', value: state.selectedProjectId } : null);
+    renderNetworkDetails(selection, network, baseProjects);
+  }
+
+  function applyNetworkSelection(projects) {
+    if (state.selectedEntity) {
+      return projects.filter(project => getProjectRelationships(project).some(rel => rel.entity_name === state.selectedEntity));
+    }
+    if (state.selectedProjectId) {
+      return projects.filter(project => String(project.id) === String(state.selectedProjectId));
+    }
+    return projects;
+  }
+
   function renderControls() {
     const years = uniqueSorted(state.allProjects.map(p => p.year).filter(v => v !== null)).sort((a, b) => a - b);
     yearFilter.innerHTML = '<option value="all">All years</option>' + years.map(y => `<option value="${y}">${y}</option>`).join('');
@@ -647,46 +1034,6 @@ Projects
     const locations = uniqueSorted(state.allProjects.map(p => p.location));
     locationFilter.innerHTML = '<option value="all">All locations</option>' + locations.map(l => `<option value="${l}">${l}</option>`).join('');
     locationFilter.value = state.location;
-  }
-
-  function renderMap(projects) {
-    const counts = {};
-    projects.forEach(project => {
-      counts[project.location] = (counts[project.location] || 0) + 1;
-    });
-
-    const locationEntries = Object.entries(counts).sort((a, b) => b[1] - a[1]);
-    mapLegendEl.innerHTML = locationEntries.length
-      ? locationEntries.map(([location, count]) => `
-          <button class="atlas-chip ${state.location === location ? 'active' : ''}" data-location="${location}">
-            ${location}: ${count}
-          </button>
-        `).join('')
-      : '<div class="atlas-empty">No matching project locations.</div>';
-
-    mapLegendEl.querySelectorAll('[data-location]').forEach(button => {
-      button.addEventListener('click', () => {
-        const next = button.dataset.location;
-        state.location = state.location === next ? 'all' : next;
-        renderAll();
-      });
-    });
-
-    const svg = `
-      <svg viewBox="0 0 520 300" preserveAspectRatio="xMidYMid meet" role="img" aria-label="California context map">
-        <rect x="0" y="0" width="520" height="300" fill="#f8fafc" />
-        <path d="M96 58 L132 40 L166 54 L214 48 L262 60 L292 84 L324 80 L358 92 L400 116 L430 144 L444 188 L430 226 L410 238 L390 262 L354 254 L322 236 L298 220 L254 226 L208 214 L170 224 L140 198 L118 180 L90 150 L82 116 L96 58 Z" fill="#dbeafe" stroke="#2563eb" stroke-width="2"/>
-        <text x="230" y="152" text-anchor="middle" font-size="20" fill="#1f2937" font-weight="600">California</text>
-        <text x="230" y="178" text-anchor="middle" font-size="12" fill="#4b5563">${projects.length} matching projects</text>
-        ${locationEntries.slice(0, 6).map(([location, count], index) => {
-          const x = 120 + (index % 3) * 120;
-          const y = 210 + Math.floor(index / 3) * 40;
-          return `<g><circle cx="${x}" cy="${y}" r="${Math.max(10, 8 + count * 2)}" fill="#22c55e" opacity="0.8" /><text x="${x + 18}" y="${y + 4}" font-size="12" fill="#1f2937">${count}</text></g>`;
-        }).join('')}
-      </svg>
-    `;
-
-    mapEl.innerHTML = svg;
   }
 
   function renderTimeline(projects) {
@@ -787,9 +1134,10 @@ Projects
   }
 
   function renderAll() {
-    const filtered = filterProjects();
+    const baseFiltered = filterProjects();
+    const filtered = applyNetworkSelection(baseFiltered);
     renderControls();
-    renderMap(filtered);
+    renderWhoNetwork(baseFiltered);
     renderTimeline(filtered);
     renderKeywords(filtered);
     renderResults(filtered);
@@ -822,11 +1170,18 @@ Projects
     renderAll();
   });
 
+  networkResetBtn.addEventListener('click', () => {
+    state.selectedEntity = null;
+    state.selectedProjectId = null;
+    renderAll();
+  });
+
   loadData().catch(error => {
     resultsEl.innerHTML = '<div class="atlas-empty">' + error.message + '</div>';
-    mapEl.innerHTML = '<div class="atlas-empty">Map unavailable because the Atlas data file is missing.</div>';
+    networkEl.innerHTML = '<div class="atlas-empty">Network unavailable because the Atlas data file is missing.</div>';
     timelineEl.innerHTML = '<div class="atlas-empty">Timeline unavailable because the Atlas data file is missing.</div>';
     keywordsEl.innerHTML = '<div class="atlas-empty">Theme cloud unavailable because the Atlas data file is missing.</div>';
+    networkDetailsEl.innerHTML = '<div class="atlas-empty">Details unavailable because the Atlas data file is missing.</div>';
   });
 })();
 </script>

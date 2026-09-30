@@ -9,7 +9,9 @@ pacman::p_load(
   tidyr,
   stringr,
   jsonlite,
-  janitor
+  janitor,
+  purrr,
+  tibble
 )
 
 source_path <- here("01_projects_repository", "project_repository_tables.xlsm")
@@ -99,6 +101,163 @@ extract_keywords <- function(text) {
   tokens[order(tokens)]
 }
 
+trim_or_empty <- function(x) {
+  str_trim(replace_na(as.character(x), ""))
+}
+
+looks_like_person_name <- function(x) {
+  x <- trim_or_empty(x)
+  if (x == "") return(FALSE)
+  if (str_detect(x, "@|,|\\(|\\)|\\{|\\}|[0-9]")) return(FALSE)
+  if (str_detect(str_to_lower(x), "agency|department|district|board|university|college|institute|center|consortium|company|consulting|foundation|nonprofit|ngo|team|water")) return(FALSE)
+  str_detect(x, "^[A-Za-z][A-Za-z\\-\\.' ]+$") && between(length(str_split(x, "\\s+")[[1]]), 2, 4)
+}
+
+classify_entity_type <- function(entity_name, role_hint = "", source_field = "") {
+  entity_name <- trim_or_empty(entity_name)
+  role_hint <- str_to_lower(trim_or_empty(role_hint))
+  source_field <- str_to_lower(trim_or_empty(source_field))
+  text <- str_to_lower(paste(entity_name, role_hint))
+
+  if (entity_name == "") return("Unknown")
+  if (source_field %in% c("your_name", "team_member") || str_detect(role_hint, "submitter|team member")) return("Individual")
+  if (str_detect(text, "government|water board|department|agency|city|county|district|state|federal|dwr|swrcb|public utility|authority")) return("Government")
+  if (str_detect(text, "academic|university|college|research|lab|scientist|professor|institute")) return("Academic / Research")
+  if (str_detect(text, "nonprofit|ngo|foundation|conservancy|community water center")) return("Nonprofit / NGO")
+  if (str_detect(text, "startup|company|private sector|technology|tech|consulting|founder|ceo|inc|llc|corp")) return("Private Sector / Technology")
+  if (str_detect(text, "community|public|residents|tribal|farmworker|stakeholder")) return("Community / Public")
+  if (looks_like_person_name(entity_name)) return("Individual")
+  "Unknown"
+}
+
+split_affiliation_tokens <- function(x) {
+  x <- trim_or_empty(x)
+  if (x == "") return(character(0))
+  tokens <- str_split(x, "\\||;|\\r?\\n")[[1]]
+  tokens <- tokens %>% str_trim() %>% .[. != "" & . != "NA"]
+  unique(tokens)
+}
+
+make_entity_row <- function(entity_name, entity_role, source_field, evidence, role_hint = "") {
+  entity_name <- trim_or_empty(entity_name)
+  if (entity_name == "") return(NULL)
+  list(
+    entity_name = entity_name,
+    entity_type = classify_entity_type(entity_name, role_hint = role_hint, source_field = source_field),
+    entity_role = entity_role,
+    source_field = source_field,
+    evidence = trim_or_empty(evidence)
+  )
+}
+
+dedupe_entity_rows <- function(rows) {
+  if (!length(rows)) return(list())
+  keys <- map_chr(rows, ~ paste(.x$entity_name, .x$entity_role, .x$source_field, sep = "||"))
+  rows[!duplicated(keys)]
+}
+
+extract_historical_entity_relationships <- function(team_name, organization_affiliation, team_members) {
+  rows <- list()
+
+  if (trim_or_empty(team_name) != "") {
+    rows <- append(rows, list(make_entity_row(
+      entity_name = team_name,
+      entity_role = "Team name",
+      source_field = "team_name",
+      evidence = team_name,
+      role_hint = "team"
+    )))
+  }
+
+  affils <- split_affiliation_tokens(organization_affiliation)
+  if (length(affils)) {
+    for (aff in affils) {
+      rows <- append(rows, list(make_entity_row(
+        entity_name = aff,
+        entity_role = "Organization affiliation",
+        source_field = "organization_affiliation",
+        evidence = aff,
+        role_hint = "organization"
+      )))
+    }
+  }
+
+  team_name_lines <- str_match_all(trim_or_empty(team_members), regex("team\\s*name\\s*:\\s*([^\\r\\n]+)", ignore_case = TRUE))[[1]]
+  if (nrow(team_name_lines) > 0) {
+    for (i in seq_len(nrow(team_name_lines))) {
+      nm <- trim_or_empty(team_name_lines[i, 2])
+      if (nm != "") {
+        rows <- append(rows, list(make_entity_row(
+          entity_name = nm,
+          entity_role = "Team name",
+          source_field = "team_members",
+          evidence = team_name_lines[i, 1],
+          role_hint = "team"
+        )))
+      }
+    }
+  }
+
+  rows <- compact(rows)
+  dedupe_entity_rows(rows)
+}
+
+extract_2026_entity_relationships <- function(submitter_name, team_name, team_source, stakeholders, entity_role_hint) {
+  rows <- list()
+
+  submitter_name <- trim_or_empty(submitter_name)
+  if (submitter_name != "") {
+    rows <- append(rows, list(make_entity_row(
+      entity_name = submitter_name,
+      entity_role = "Submitter",
+      source_field = "your_name",
+      evidence = submitter_name,
+      role_hint = "submitter"
+    )))
+  }
+
+  if (trim_or_empty(team_name) != "") {
+    rows <- append(rows, list(make_entity_row(
+      entity_name = team_name,
+      entity_role = "Team name",
+      source_field = "if_this_is_a_team_project_please_provide_the_other_team_members_names_emails_and_the_team_name_if_you_have_one",
+      evidence = team_name,
+      role_hint = paste("team", entity_role_hint)
+    )))
+  }
+
+  stakeholders_tokens <- split_affiliation_tokens(stakeholders)
+  if (length(stakeholders_tokens)) {
+    stakeholder_keywords <- regex("agency|district|board|university|college|community|residents|tribal|nonprofit|ngo|consortium|government|department|water|center|authority|users|providers|partners|stakeholders", ignore_case = TRUE)
+    for (tok in stakeholders_tokens) {
+      if (tok != "" && str_detect(tok, stakeholder_keywords)) {
+        rows <- append(rows, list(make_entity_row(
+          entity_name = tok,
+          entity_role = "Stakeholder",
+          source_field = "please_list_any_key_partners_stakeholders_and_or_communities_that_engage_or_intersect_with_this_project_or_its_data_i_e_are_affected_by_the_outcomes_associated_with_this_data_opportunity",
+          evidence = tok,
+          role_hint = "stakeholder"
+        )))
+      }
+    }
+  }
+
+  rows <- compact(rows)
+  dedupe_entity_rows(rows)
+}
+
+attach_project_metadata <- function(rows, project_id, project_title, year) {
+  if (!length(rows)) return(list())
+  map(rows, ~ c(
+    .x,
+    list(
+      project_id = project_id,
+      project_title = project_title,
+      year = year
+    )
+  ))
+}
+
 projects <- projects_raw %>%
   mutate(
     year = suppressWarnings(as.numeric(str_replace(as.character(year), "\\.0$", ""))),
@@ -106,8 +265,10 @@ projects <- projects_raw %>%
     description = replace_na(description, ""),
     team_name = replace_na(team_name, ""),
     team_members = replace_na(team_members, ""),
+    organization_affiliation = replace_na(organization_affiliation, ""),
     topics = replace_na(topics, ""),
     event = replace_na(event, ""),
+    entity_role = "",
     project_slug = title %>%
       str_to_lower() %>%
       make_clean_names() %>%
@@ -115,6 +276,10 @@ projects <- projects_raw %>%
     project_url = paste0("projects/", project_slug, ".html"),
     raw_text = paste(title, description),
     keywords = lapply(raw_text, extract_keywords),
+    entity_relationships = pmap(
+      list(team_name, organization_affiliation, team_members),
+      extract_historical_entity_relationships
+    ),
     status = "Historical",
     spatial_status = "statewide_no_geospatial_footprint",
     spatial_category = "California statewide",
@@ -138,12 +303,14 @@ projects <- projects_raw %>%
     year,
     event,
     status,
+    entity_role,
     team_name,
     team_members,
     description,
     topics,
     topic_list,
     keywords,
+    entity_relationships,
     project_url,
     spatial_status,
     spatial_category,
@@ -198,16 +365,28 @@ commitments_2026 <- commitments_2026_raw %>%
     topics = "",
     topic_list = replicate(n(), character(0), simplify = FALSE),
     event = "2026 CA Open Water Data Showcase (Project Commitments)",
+    entity_role = replace_na(please_check_any_and_all_boxes_that_apply_i_am, ""),
+    stakeholders = replace_na(
+      please_list_any_key_partners_stakeholders_and_or_communities_that_engage_or_intersect_with_this_project_or_its_data_i_e_are_affected_by_the_outcomes_associated_with_this_data_opportunity,
+      ""
+    ),
     raw_text = paste(
       title,
       description,
       replace_na(please_check_any_and_all_boxes_that_apply_i_am, ""),
-      replace_na(
-        please_list_any_key_partners_stakeholders_and_or_communities_that_engage_or_intersect_with_this_project_or_its_data_i_e_are_affected_by_the_outcomes_associated_with_this_data_opportunity,
-        ""
-      )
+      stakeholders
     ),
     keywords = lapply(raw_text, extract_keywords),
+    entity_relationships = pmap(
+      list(
+        your_name,
+        team_name,
+        team_source,
+        stakeholders,
+        entity_role
+      ),
+      extract_2026_entity_relationships
+    ),
     project_url = NA_character_,
     status = "In progress",
     spatial_status = "statewide_no_geospatial_footprint",
@@ -221,12 +400,14 @@ commitments_2026 <- commitments_2026_raw %>%
     year,
     event,
     status,
+    entity_role,
     team_name,
     team_members,
     description,
     topics,
     topic_list,
     keywords,
+    entity_relationships,
     project_url,
     spatial_status,
     spatial_category,
@@ -236,7 +417,13 @@ commitments_2026 <- commitments_2026_raw %>%
   )
 
 projects <- bind_rows(projects, commitments_2026) %>%
-  mutate(id = row_number(), .before = title)
+  mutate(id = row_number(), .before = title) %>%
+  mutate(
+    entity_relationships = pmap(
+      list(entity_relationships, id, title, year),
+      attach_project_metadata
+    )
+  )
 
 output_dir <- here("docs")
 if (!dir.exists(output_dir)) {
